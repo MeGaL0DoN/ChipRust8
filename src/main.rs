@@ -1,27 +1,29 @@
 mod chip_core;
 
 use minifb::{Key, Window, WindowOptions};
+use chip_core::{ ChipCore };
 
-const WIDTH: usize = 64 * 12;
-const HEIGHT: usize = 32 * 12;
+const FRAMEBUFFER_SIZE: usize = ChipCore::SCR_WIDTH * ChipCore::SCR_HEIGHT;
+const WINDOW_SCALE: usize = 12;
 
 fn main() {
-    let mut buffer: [u32; 64 * 32] = [0; 64 * 32];
+    let mut buffer: [u32; FRAMEBUFFER_SIZE] = [0; FRAMEBUFFER_SIZE];
 
     let window_options = WindowOptions {
         scale_mode: minifb::ScaleMode::Stretch,
         .. WindowOptions::default()
     };
 
-    let mut window = Window::new("ChipRust8", WIDTH, HEIGHT, window_options)
+    let mut window = Window::new("ChipRust8",
+                                 ChipCore::SCR_WIDTH * WINDOW_SCALE,
+                                 ChipCore::SCR_HEIGHT * WINDOW_SCALE, window_options)
         .unwrap_or_else(|e| {
             panic!("{}", e);
         });
 
-    // Limit to max ~60 fps update rate
     window.set_target_fps(60);
 
     while window.is_open() {
-        window.update_with_buffer(&buffer, 64, 32).unwrap();
+        window.update_with_buffer(&buffer, ChipCore::SCR_WIDTH, ChipCore::SCR_HEIGHT).unwrap();
     }
 }
