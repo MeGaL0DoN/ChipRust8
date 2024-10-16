@@ -1,6 +1,5 @@
 use std::path::Path;
 use std::{fs};
-use minifb::Key::S;
 use rand::Rng;
 use rand::rngs::ThreadRng;
 
