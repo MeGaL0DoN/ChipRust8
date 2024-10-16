@@ -1,101 +1,191 @@
 mod chip_core;
 
-use minifb::{ Key, Window, Menu, WindowOptions };
+use std::path::{ PathBuf };
+use std::time::{ Instant, Duration };
+use minifb::{ Key, Window, Menu, WindowOptions, KeyRepeat};
 use chip_core::{ ChipCore };
 
-const FRAMEBUFFER_SIZE: usize = ChipCore::SCR_WIDTH * ChipCore::SCR_HEIGHT;
-const WINDOW_SCALE: usize = 12;
-const FILE_MENU_LOAD_ID: usize = 1;
-const FILE_MENU_RELOAD_ID: usize = 2;
-const IPF: u16 = 11;
-
-fn update_chip_input(window: &Window, chip: &mut ChipCore) {
-    let new_keys = [
-        window.is_key_down(Key::X),
-        window.is_key_down(Key::Key1),
-        window.is_key_down(Key::Key2),
-        window.is_key_down(Key::Key3),
-        window.is_key_down(Key::Q),
-        window.is_key_down(Key::W),
-        window.is_key_down(Key::E),
-        window.is_key_down(Key::A),
-        window.is_key_down(Key::S),
-        window.is_key_down(Key::D),
-        window.is_key_down(Key::Z),
-        window.is_key_down(Key::C),
-        window.is_key_down(Key::Key4),
-        window.is_key_down(Key::R),
-        window.is_key_down(Key::F),
-        window.is_key_down(Key::V),
-    ];
-
-    for i in 0..16 {
-        if chip.get_keys()[i] != new_keys[i] {
-            chip.key_event(i as u8, new_keys[i]);
-        }
-    }
+struct App {
+    chip: ChipCore,
+    chip_screen_buf: [u32; ChipCore::CHIP_FRAMEBUFFER_SIZE],
+    schip_screen_buf: [u32; ChipCore::SCHIP_FRAMEBUFFER_SIZE],
+    window: Window,
+    options_menu : Menu,
+    file_menu : Menu,
+    rom_path: PathBuf,
+    rom_loaded: bool,
+    chip_paused: bool,
+    ipf: u32,
+    execute_times: f64,
+    execute_count: u32,
+    seconds_timer: Instant
 }
 
-fn main() {
-    let mut chip = ChipCore::new();
-    let mut screen_buf: [u32; FRAMEBUFFER_SIZE] = [0; FRAMEBUFFER_SIZE];
+impl App {
+    const APP_NAME: &'static str = "ChipRust8";
+    const WINDOW_SCALE: usize = 12;
+    const FILE_MENU_LOAD_ID: usize = 1;
+    const FILE_MENU_RELOAD_ID: usize = 2;
+    const KEY_BINDING: [Key; 16] = [
+        Key::X, Key::Key1, Key::Key2, Key::Key3, Key::Q, Key::W, Key::E, Key::A,
+        Key::S, Key::D, Key::Z, Key::C, Key::Key4, Key::R, Key::F, Key::V,
+    ];
 
-    let mut window =
-        Window::new("ChipRust8",
-                    ChipCore::SCR_WIDTH * WINDOW_SCALE, ChipCore::SCR_HEIGHT * WINDOW_SCALE, WindowOptions::default())
-        .unwrap_or_else(|e| {
-            panic!("{}", e);
-        });
+    fn update_chip_input(&mut self) {
+        let ipf_step = if self.window.is_key_down(Key::RightShift) || self.window.is_key_down(Key::LeftShift) { 100000 } else { 1 };
 
-    window.set_target_fps(60);
+        if self.window.is_key_pressed(Key::Right, KeyRepeat::Yes) {
+            self.ipf += ipf_step;
+            self.update_window_title();
+        }
+        else if self.window.is_key_pressed(Key::Left, KeyRepeat::Yes) && self.ipf > ipf_step {
+            self.ipf -= ipf_step;
+            self.update_window_title();
+        }
 
-    let options_menu = Menu::new("Options").unwrap();
-    let mut file_menu = Menu::new("File").unwrap();
-    file_menu.add_item("Load", FILE_MENU_LOAD_ID).build();
-    file_menu.add_item("Reload", FILE_MENU_RELOAD_ID).build();
+        for i in 0..16 {
+            let new_key_state = self.window.is_key_down(Self::KEY_BINDING[i]);
 
-    window.add_menu(&file_menu);
-    window.add_menu(&options_menu);
+            if self.chip.get_keys()[i] != new_key_state {
+                self.chip.key_event(i as u8, new_key_state);
+            }
+        }
+    }
 
-    let mut last_path = std::env::current_dir().unwrap();
-    let mut rom_loaded = false;
+    pub fn new() -> Self {
+        let mut app = Self {
+            chip: ChipCore::new(),
+            chip_screen_buf: [0; ChipCore::CHIP_FRAMEBUFFER_SIZE],
+            schip_screen_buf: [0; ChipCore::SCHIP_FRAMEBUFFER_SIZE],
 
-    while window.is_open() {
-        if let Some(menu_id) = window.is_menu_pressed() {
+            window: Window::new(Self::APP_NAME, ChipCore::CHIP_SCR_WIDTH * App::WINDOW_SCALE,
+                                ChipCore::CHIP_SCR_HEIGHT * App::WINDOW_SCALE, WindowOptions::default())
+                .unwrap_or_else(|e| {
+                    panic!("{}", e);
+                }),
+
+            options_menu: Menu::new("Options").unwrap(),
+            file_menu: Menu::new("File").unwrap(),
+
+            rom_path: std::env::current_dir().unwrap(),
+            rom_loaded: false,
+            chip_paused: false,
+            ipf: 11,
+            execute_times: 0.0,
+            execute_count: 0,
+            seconds_timer: Instant::now(),
+        };
+
+        app.file_menu.add_item("Load", Self::FILE_MENU_LOAD_ID).build();
+        app.file_menu.add_item("Reload", Self::FILE_MENU_RELOAD_ID).build();
+
+        app.window.add_menu(&app.file_menu);
+        app.window.add_menu(&app.options_menu);
+
+        app.window.set_target_fps(60);
+        app
+    }
+    
+    fn update_window_title(&mut self) {
+        let title = if self.chip_paused {
+            format!("{} (Paused)", Self::APP_NAME)
+        }
+        else {
+            format!("{} (IPF: {})", Self::APP_NAME, self.ipf)
+        };
+
+        self.window.set_title(title.as_str());
+    }
+    
+    fn check_seconds_timer(&mut self) {
+        if self.seconds_timer.elapsed() >= Duration::from_secs(1) && self.rom_loaded && !self.chip_paused {
+            let avg_frame_time = (self.execute_times / self.execute_count as f64) * 1000.0;
+            println!("Average execute time: {:.3} ms", avg_frame_time);
+
+            self.execute_times = 0.0;
+            self.execute_count = 0;
+            self.seconds_timer = Instant::now();
+        }   
+    }
+
+    fn load_rom(&mut self) {
+        if self.chip.load_rom(self.rom_path.as_path()) {
+            self.rom_loaded = true;
+            self.chip_paused = false;
+            self.update_window_title();
+        }
+    }
+    
+    fn update_window(&mut self) {
+        if let Some(menu_id) = self.window.is_menu_pressed() {
             match menu_id {
-                FILE_MENU_LOAD_ID => {
+                Self::FILE_MENU_LOAD_ID => {
                     let res = rfd::FileDialog::new()
                         .add_filter("Chip8 ROM", &["ch8", "bnc"])
-                        .set_directory(&last_path)
+                        .set_directory(&self.rom_path)
                         .pick_files();
 
                     if let Some(paths) = res {
-                        if chip.load_rom(paths[0].as_path()) {
-                            rom_loaded = true;
-                            last_path = paths[0].clone();
+                        if self.chip.load_rom(paths[0].as_path()) {
+                            self.rom_path = paths[0].clone();
+                            self.load_rom();
                         }
                     }
                 }
-                FILE_MENU_RELOAD_ID => {
-                    if rom_loaded {
-                        chip.load_rom(last_path.as_path());
+                Self::FILE_MENU_RELOAD_ID => {
+                    if self.rom_loaded {
+                        self.load_rom();
                     }
                 }
                 _ => {}
             }
         }
 
-        if rom_loaded {
-            update_chip_input(&window, &mut chip);
-            chip.update_timers();
-
-            for _ in 0..IPF {
-                chip.execute();
-            }
-
-            chip.render_to_rgb_buffer(&mut screen_buf);
+        if self.chip.high_res_mode() {
+            self.window.update_with_buffer(&self.schip_screen_buf, ChipCore::SCHIP_SCR_WIDTH, ChipCore::SCHIP_SCR_HEIGHT).unwrap();
         }
-
-        window.update_with_buffer(&screen_buf, ChipCore::SCR_WIDTH, ChipCore::SCR_HEIGHT).unwrap();
+        else {
+            self.window.update_with_buffer(&self.chip_screen_buf, ChipCore::CHIP_SCR_WIDTH, ChipCore::CHIP_SCR_HEIGHT).unwrap();
+        }
     }
+
+    pub fn run(&mut self) {
+        while self.window.is_open() {
+            if self.rom_loaded {
+                if self.window.is_key_pressed(Key::Tab, KeyRepeat::No) {
+                    self.chip_paused = !self.chip_paused;
+                    self.update_window_title();
+                }
+
+                if !self.chip_paused {
+                    self.update_chip_input();
+                    self.chip.update_timers();
+
+                    let execute_start = Instant::now();
+
+                    for _ in 0..self.ipf {
+                        self.chip.execute();
+                    }
+
+                    self.execute_times += execute_start.elapsed().as_secs_f64();
+                    self.execute_count += 1;
+
+                    if self.chip.high_res_mode() {
+                        self.chip.render_to_rgb_schip_buffer(&mut self.schip_screen_buf);
+                    }
+                    else {
+                        self.chip.render_to_rgb_chip_buffer(&mut self.chip_screen_buf);
+                    }
+                }
+            }
+            
+            self.check_seconds_timer();
+            self.update_window();
+        }
+    }
+}
+
+fn main() {
+    let mut app = App::new();
+    app.run();
 }

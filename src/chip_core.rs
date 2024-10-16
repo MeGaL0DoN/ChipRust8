@@ -1,10 +1,12 @@
 use std::path::Path;
 use std::{fs};
+use minifb::Key::S;
 use rand::Rng;
 use rand::rngs::ThreadRng;
 
 pub struct ChipCore {
-    screen_buf: [u64; ChipCore::SCR_HEIGHT],
+    screen_buf: [u64; ChipCore::CHIP_SCR_HEIGHT],
+    schip_screen_buf: [u128; ChipCore::SCHIP_SCR_HEIGHT],
     ram: [u8; ChipCore::RAM_SIZE],
     regs: [u8; 16],
     stack: [u16; 16],
@@ -16,13 +18,18 @@ pub struct ChipCore {
     i_reg: u16,
     delay_timer: u8,
     sound_timer: u8,
+    high_res_mode: bool,
     rng: ThreadRng,
 }
 
 impl ChipCore {
-    pub const SCR_WIDTH: usize = 64;
-    pub const SCR_HEIGHT: usize = 32;
+    pub const CHIP_SCR_WIDTH: usize = 64;
+    pub const SCHIP_SCR_WIDTH: usize = Self::CHIP_SCR_WIDTH * 2;
+    pub const CHIP_SCR_HEIGHT: usize = 32;
+    pub const SCHIP_SCR_HEIGHT: usize = Self::CHIP_SCR_HEIGHT * 2;
     pub const RAM_SIZE: usize = 4096;
+    pub const CHIP_FRAMEBUFFER_SIZE: usize = Self::CHIP_SCR_WIDTH * Self::CHIP_SCR_HEIGHT;
+    pub const SCHIP_FRAMEBUFFER_SIZE: usize = Self::SCHIP_SCR_WIDTH * Self::SCHIP_SCR_HEIGHT;
 
     const FONT_SET: [u8; 80] =
     [
@@ -46,7 +53,8 @@ impl ChipCore {
 
     pub fn new() -> Self {
         let mut chip_core = Self {
-            screen_buf: [0; Self::SCR_HEIGHT],
+            screen_buf: [0; Self::CHIP_SCR_HEIGHT],
+            schip_screen_buf: [0; Self::SCHIP_SCR_HEIGHT],
             ram: [0; Self::RAM_SIZE],
             regs: [0; 16],
             stack: [0; 16],
@@ -58,6 +66,7 @@ impl ChipCore {
             i_reg: 0,
             delay_timer: 0,
             sound_timer: 0,
+            high_res_mode: false,
             rng: rand::thread_rng(),
         };
 
@@ -85,9 +94,14 @@ impl ChipCore {
         false
     }
 
-    pub fn render_to_rgb_buffer(&mut self, buf: &mut [u32]) {
-        for i in 0..Self::SCR_WIDTH * Self::SCR_HEIGHT {
+    pub fn render_to_rgb_chip_buffer(&mut self, buf: &mut [u32]) {
+        for i in 0..Self::CHIP_FRAMEBUFFER_SIZE {
             buf[i] = if ((self.screen_buf[i >> 6] >> (63 - (i & 0x3F))) & 0x1) == 1 { 0xFFFFFFFF } else { 0 };
+        }
+    }
+    pub fn render_to_rgb_schip_buffer(&mut self, buf: &mut[u32]) {
+        for i in 0..Self::SCHIP_FRAMEBUFFER_SIZE {
+            buf[i] = if ((self.schip_screen_buf[i >> 7] >> (127 - (i & 0x7F))) & 0x1) == 1 { 0xFFFFFFFF } else { 0 };
         }
     }
 
@@ -103,6 +117,10 @@ impl ChipCore {
         &self.keys
     }
 
+    pub fn high_res_mode(&self) -> bool {
+        self.high_res_mode
+    }
+
     pub fn update_timers(&mut self) {
         if self.delay_timer > 0 {
             self.delay_timer -= 1;
@@ -111,7 +129,16 @@ impl ChipCore {
             self.sound_timer -= 1;
         }
     }
-
+    
+    fn shift_screenbuf_down<T, const N: usize>(buf: &mut [T; N], num_pixels: usize) where T: Copy + Default  {
+        for i in (num_pixels..N).rev() {
+            buf[i] = buf[i - num_pixels];
+        }
+        
+        for i in 0..num_pixels  {
+            buf[i] = T::default();
+        }
+    }
     pub fn execute(&mut self) {
         let opcode= ((self.ram[(self.pc & 0xFFF) as usize] as u16) << 8) | (self.ram[((self.pc + 1) & 0xFFF) as usize] as u16);
         self.pc += 2;
@@ -125,14 +152,69 @@ impl ChipCore {
             0x0000 => {
                 match opcode {
                     0x00E0 => {
-                        self.screen_buf.fill(0);
+                        if self.high_res_mode {
+                            self.schip_screen_buf.fill(0);
+                        }
+                        else {
+                            self.screen_buf.fill(0);
+                        }
                     }
                     0x00EE => {
                         self.sp = self.sp.wrapping_sub(1) & 0xF;
                         self.pc = self.stack[self.sp as usize];
                     }
+                    0x00FE => {
+                        if self.high_res_mode {
+                            self.high_res_mode = false;
+                            self.screen_buf.fill(0);   
+                        }
+                    }
+                    0x00FF => {
+                        if !self.high_res_mode {
+                            self.high_res_mode = true;
+                            self.schip_screen_buf.fill(0);   
+                        }
+                    }
+                    0x00FB => {
+                        if self.high_res_mode {
+                            for row in self.schip_screen_buf.iter_mut() {
+                                *row >>= 4;
+                            }
+                        }
+                        else {
+                            for row in self.screen_buf.iter_mut() {
+                                *row >>= 4;
+                            }
+                        }
+                    }
+                    0x00FC => {
+                        if self.high_res_mode {
+                            for row in self.schip_screen_buf.iter_mut() {
+                                *row <<= 4;
+                            }
+                        }
+                        else {
+                            for row in self.screen_buf.iter_mut() {
+                                *row <<= 4;
+                            }
+                        }
+                    }
                     _ => {
-                        println!("Unknown opcode {:X}", opcode);
+                        match opcode & 0xFFF0 {
+                            0x00C0 => {
+                                let n = (opcode & 0x000F) as usize;
+                                
+                                if self.high_res_mode {
+                                    Self::shift_screenbuf_down(&mut self.schip_screen_buf, n);
+                                }
+                                else {
+                                    Self::shift_screenbuf_down(&mut self.screen_buf, n);
+                                }
+                            }
+                            _ => {
+                                println!("Unknown opcode {:X}", opcode);
+                            }
+                        }
                     }
                 }
             }
@@ -241,24 +323,7 @@ impl ChipCore {
                 self.regs[x()] = self.rng.gen::<u8>() & data();
             }
             0xD000 => {
-                let height = opcode & 0x000F;
-                let x_pos = self.regs[x()] % (Self::SCR_WIDTH as u8);
-                let mut y_pos = self.regs[y()] % (Self::SCR_HEIGHT as u8);
-
-                self.regs[0xF] = 0;
-
-                for i in 0..height {
-                    if y_pos == Self::SCR_HEIGHT as u8 {
-                        break;
-                    }
-
-                    let sprite_row : u64 = self.ram[((self.i_reg + i) & 0xFFF) as usize] as u64;
-                    let sprite_mask: u64 = if x_pos > 56 { sprite_row >> (x_pos - 56) } else { sprite_row << (63 - x_pos - 7) };
-
-                    self.regs[0xF] |= ((self.screen_buf[y_pos as usize] & sprite_mask) != 0) as u8;
-                    self.screen_buf[y_pos as usize] ^= sprite_mask;
-                    y_pos += 1;
-                }
+                Self::dxyn(self, opcode);
             }
             0xE000 => {
                 match opcode & 0x00FF {
@@ -328,6 +393,54 @@ impl ChipCore {
             }
             _ => {
                 println!("Unknown opcode {:X}", opcode);
+            }
+        }
+    }
+
+    fn dxyn(&mut self, opcode: u16) {
+        let mut x_pos = self.regs[((opcode & 0x0F00) >> 8) as usize];
+        let mut y_pos = self.regs[((opcode & 0x00F0) >> 4) as usize];
+
+        let height = opcode & 0x000F;
+        self.regs[0xF] = 0;
+
+        if !self.high_res_mode {
+            x_pos %= Self::CHIP_SCR_WIDTH as u8;
+            y_pos %= Self::CHIP_SCR_HEIGHT as u8;
+
+            for i in 0..height {
+                if y_pos == Self::CHIP_SCR_HEIGHT as u8 {
+                    break;
+                }
+
+                let sprite_row = self.ram[((self.i_reg + i) & 0xFFF) as usize] as u64;
+                let sprite_mask= if x_pos > 56 { sprite_row >> (x_pos - 56) } else { sprite_row << (63 - x_pos - 7) };
+
+                self.regs[0xF] |= ((self.screen_buf[y_pos as usize] & sprite_mask) != 0) as u8;
+                self.screen_buf[y_pos as usize] ^= sprite_mask;
+                y_pos += 1;
+            }
+        }
+        else {
+            x_pos %= Self::SCHIP_SCR_WIDTH as u8;
+            y_pos %= Self::SCHIP_SCR_HEIGHT as u8;
+            
+            if height == 0 {
+                
+            }
+            else {
+                for i in 0..height {
+                    if y_pos == Self::SCHIP_SCR_HEIGHT as u8 {
+                        break;
+                    }
+
+                    let sprite_row = self.ram[((self.i_reg + i) & 0xFFF) as usize] as u128;
+                    let sprite_mask = if x_pos > 120 { sprite_row >> (x_pos - 120) } else { sprite_row << (127 - x_pos - 7) };
+
+                    self.regs[0xF] |= ((self.schip_screen_buf[y_pos as usize] & sprite_mask) != 0) as u8;
+                    self.schip_screen_buf[y_pos as usize] ^= sprite_mask;
+                    y_pos += 1;
+                }
             }
         }
     }
