@@ -114,21 +114,25 @@ impl App {
         }
     }
 
+    fn file_load_dialog(&mut self) {
+        let res = rfd::FileDialog::new()
+            .add_filter("Chip8 ROM", &["ch8", "bnc"])
+            .set_directory(&self.rom_path)
+            .pick_files();
+
+        if let Some(paths) = res {
+            if self.chip.load_rom(paths[0].as_path()) {
+                self.rom_path = paths[0].clone();
+                self.load_rom();
+            }
+        }
+    }
+
     fn update_window(&mut self) {
         if let Some(menu_id) = self.window.is_menu_pressed() {
             match menu_id {
                 Self::FILE_MENU_LOAD_ID => {
-                    let res = rfd::FileDialog::new()
-                        .add_filter("Chip8 ROM", &["ch8", "bnc"])
-                        .set_directory(&self.rom_path)
-                        .pick_files();
-
-                    if let Some(paths) = res {
-                        if self.chip.load_rom(paths[0].as_path()) {
-                            self.rom_path = paths[0].clone();
-                            self.load_rom();
-                        }
-                    }
+                    self.file_load_dialog();
                 }
                 Self::FILE_MENU_RELOAD_ID => {
                     if self.rom_loaded {
@@ -149,6 +153,10 @@ impl App {
 
     pub fn run(&mut self) {
         while self.window.is_open() {
+            if self.window.is_key_pressed(Key::Escape, KeyRepeat::No) {
+                self.file_load_dialog();
+            }
+
             if self.rom_loaded {
                 if self.window.is_key_pressed(Key::Tab, KeyRepeat::No) {
                     self.chip_paused = !self.chip_paused;
