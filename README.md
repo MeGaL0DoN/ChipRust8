@@ -13,4 +13,4 @@ Keyboard layout is:
 | A | S | D | F |
 | Z | X | C | V |
 
-Press Tab to pause the emulator. Left and right arrow to change instructions per frame (hold shift to adjust in intervals of 100,000)
+Press Tab to pause the emulator. Use left and right arrow to change instructions per frame (hold shift to adjust in intervals of 100,000)
