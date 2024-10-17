@@ -30,7 +30,7 @@ impl ChipCore {
     pub const CHIP_FRAMEBUFFER_SIZE: usize = Self::CHIP_SCR_WIDTH * Self::CHIP_SCR_HEIGHT;
     pub const SCHIP_FRAMEBUFFER_SIZE: usize = Self::SCHIP_SCR_WIDTH * Self::SCHIP_SCR_HEIGHT;
 
-    const FONT_SET: [u8; 80] =
+    const CHIP_FONT: [u8; 80] =
     [
         0xF0, 0x90, 0x90, 0x90, 0xF0, // 0
         0x20, 0x60, 0x20, 0x20, 0x70, // 1
@@ -49,6 +49,19 @@ impl ChipCore {
         0xF0, 0x80, 0xF0, 0x80, 0xF0, // E
         0xF0, 0x80, 0xF0, 0x80, 0x80  // F
     ];
+    const SCHIP_FONT: [u8; 100] = [
+        0x3C, 0x7E, 0xE7, 0xC3, 0xC3, 0xC3, 0xC3, 0xE7, 0x7E, 0x3C, // big 0
+        0x18, 0x38, 0x58, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x3C, // big 1
+        0x3E, 0x7F, 0xC3, 0x06, 0x0C, 0x18, 0x30, 0x60, 0xFF, 0xFF, // big 2
+        0x3C, 0x7E, 0xC3, 0x03, 0x0E, 0x0E, 0x03, 0xC3, 0x7E, 0x3C, // big 3
+        0x06, 0x0E, 0x1E, 0x36, 0x66, 0xC6, 0xFF, 0xFF, 0x06, 0x06, // big 4
+        0xFF, 0xFF, 0xC0, 0xC0, 0xFC, 0xFE, 0x03, 0xC3, 0x7E, 0x3C, // big 5
+        0x3E, 0x7C, 0xE0, 0xC0, 0xFC, 0xFE, 0xC3, 0xC3, 0x7E, 0x3C, // big 6
+        0xFF, 0xFF, 0x03, 0x06, 0x0C, 0x18, 0x30, 0x60, 0x60, 0x60, // big 7
+        0x3C, 0x7E, 0xC3, 0xC3, 0x7E, 0x7E, 0xC3, 0xC3, 0x7E, 0x3C, // big 8
+        0x3C, 0x7E, 0xC3, 0xC3, 0x7F, 0x3F, 0x03, 0x03, 0x3E, 0x7C  // big 9
+    ];
+    const SCHIP_FONT_OFFSET: usize = Self::CHIP_FONT.len();
 
     pub fn new() -> Self {
         let mut chip_core = Self {
@@ -69,7 +82,8 @@ impl ChipCore {
             rng: rand::thread_rng(),
         };
 
-        chip_core.ram[..Self::FONT_SET.len()].copy_from_slice(&Self::FONT_SET);
+        chip_core.ram[..Self::CHIP_FONT.len()].copy_from_slice(&Self::CHIP_FONT);
+        chip_core.ram[Self::SCHIP_FONT_OFFSET..Self::SCHIP_FONT.len() + Self::SCHIP_FONT_OFFSET].copy_from_slice(&Self::SCHIP_FONT);
 
         chip_core
     }
@@ -95,12 +109,12 @@ impl ChipCore {
 
     pub fn render_to_rgb_chip_buffer(&mut self, buf: &mut [u32]) {
         for i in 0..Self::CHIP_FRAMEBUFFER_SIZE {
-            buf[i] = if ((self.screen_buf[i >> 6] >> (63 - (i & 0x3F))) & 0x1) == 1 { 0xFFFFFFFF } else { 0 };
+            buf[i] = if ((self.screen_buf[i >> 6] >> (Self::CHIP_SCR_WIDTH - 1 - (i & 0x3F))) & 0x1) == 1 { 0xFFFFFFFF } else { 0 };
         }
     }
     pub fn render_to_rgb_schip_buffer(&mut self, buf: &mut[u32]) {
         for i in 0..Self::SCHIP_FRAMEBUFFER_SIZE {
-            buf[i] = if ((self.schip_screen_buf[i >> 7] >> (127 - (i & 0x7F))) & 0x1) == 1 { 0xFFFFFFFF } else { 0 };
+            buf[i] = if ((self.schip_screen_buf[i >> 7] >> (Self::SCHIP_SCR_WIDTH - 1 - (i & 0x7F))) & 0x1) == 1 { 0xFFFFFFFF } else { 0 };
         }
     }
 
@@ -133,9 +147,9 @@ impl ChipCore {
         for i in (num_pixels..N).rev() {
             buf[i] = buf[i - num_pixels];
         }
-        
-        for i in 0..num_pixels  {
-            buf[i] = T::default();
+
+        for elem in buf.iter_mut().take(num_pixels) {
+            *elem = T::default();
         }
     }
     pub fn execute(&mut self) {
@@ -370,6 +384,9 @@ impl ChipCore {
                     0x0029 => {
                         self.i_reg = ((self.regs[x()] & 0xF) * 0x5) as u16;
                     }
+                    0x0030 => {
+                        self.i_reg = Self::CHIP_FONT.len() as u16 + ((self.regs[x()] & 0xF) * 10) as u16;
+                    }
                     0x0033 => {
                         self.ram[self.i_reg as usize & 0xFFF] = self.regs[x()] / 100;
                         self.ram[(self.i_reg as usize + 1) & 0xFFF] = (self.regs[x()] / 10) % 10;
@@ -399,48 +416,86 @@ impl ChipCore {
     fn dxyn(&mut self, opcode: u16) {
         let mut x_pos = self.regs[((opcode & 0x0F00) >> 8) as usize];
         let mut y_pos = self.regs[((opcode & 0x00F0) >> 4) as usize];
-
         let height = opcode & 0x000F;
+
         self.regs[0xF] = 0;
 
         if !self.high_res_mode {
             x_pos %= Self::CHIP_SCR_WIDTH as u8;
             y_pos %= Self::CHIP_SCR_HEIGHT as u8;
 
-            for i in 0..height {
-                if y_pos == Self::CHIP_SCR_HEIGHT as u8 {
-                    break;
-                }
-
-                let sprite_row = self.ram[((self.i_reg + i) & 0xFFF) as usize] as u64;
-                let sprite_mask= if x_pos > 56 { sprite_row >> (x_pos - 56) } else { sprite_row << (63 - x_pos - 7) };
-
-                self.regs[0xF] |= ((self.screen_buf[y_pos as usize] & sprite_mask) != 0) as u8;
-                self.screen_buf[y_pos as usize] ^= sprite_mask;
-                y_pos += 1;
+            if height == 0 {
+                self.draw_lores_sprite::<true>(x_pos, y_pos, height);
+            }
+            else {
+                self.draw_lores_sprite::<false>(x_pos, y_pos, height);
             }
         }
         else {
             x_pos %= Self::SCHIP_SCR_WIDTH as u8;
             y_pos %= Self::SCHIP_SCR_HEIGHT as u8;
-            
+
             if height == 0 {
-                
+                self.draw_hires_sprite::<true>(x_pos, y_pos, height);
             }
             else {
-                for i in 0..height {
-                    if y_pos == Self::SCHIP_SCR_HEIGHT as u8 {
-                        break;
-                    }
-
-                    let sprite_row = self.ram[((self.i_reg + i) & 0xFFF) as usize] as u128;
-                    let sprite_mask = if x_pos > 120 { sprite_row >> (x_pos - 120) } else { sprite_row << (127 - x_pos - 7) };
-
-                    self.regs[0xF] |= ((self.schip_screen_buf[y_pos as usize] & sprite_mask) != 0) as u8;
-                    self.schip_screen_buf[y_pos as usize] ^= sprite_mask;
-                    y_pos += 1;
-                }
+                self.draw_hires_sprite::<false>(x_pos, y_pos, height);
             }
+        }
+    }
+    
+    fn draw_lores_sprite<const DOUBLE_HEIGHT: bool>(&mut self, x_pos: u8, mut y_pos: u8, height: u16) {
+        let step = if DOUBLE_HEIGHT { 2 } else { 1 };
+        let sprite_width = if DOUBLE_HEIGHT { 15 } else { 7 };
+        let sprite_bound = Self::CHIP_SCR_WIDTH as u8 - sprite_width - 1;
+
+        for i in (0..if DOUBLE_HEIGHT { 32 } else { height }).step_by(step) {
+            if y_pos == Self::CHIP_SCR_HEIGHT as u8 {
+                break;
+            }
+
+            let sprite_row = if DOUBLE_HEIGHT {
+                let hi = self.ram[((self.i_reg + i) & 0xFFF) as usize] as u64;
+                let lo = self.ram[((self.i_reg + i + 1) & 0xFFF) as usize] as u64;
+                (hi << 8) | lo
+            }
+            else {
+                self.ram[((self.i_reg + i) & 0xFFF) as usize] as u64
+            };
+
+            let sprite_mask = if x_pos > sprite_bound { sprite_row >> (x_pos - sprite_bound) }
+            else { sprite_row << (Self::CHIP_SCR_WIDTH as u8 - 1 - x_pos - sprite_width) };
+
+            self.regs[0xF] |= ((self.screen_buf[y_pos as usize] & sprite_mask) != 0) as u8;
+            self.screen_buf[y_pos as usize] ^= sprite_mask;
+            y_pos += 1;
+        }
+    }
+    fn draw_hires_sprite<const DOUBLE_HEIGHT: bool>(&mut self, x_pos: u8, mut y_pos: u8, height: u16) {
+        let step = if DOUBLE_HEIGHT { 2 } else { 1 };
+        let sprite_width = if DOUBLE_HEIGHT { 15 } else { 7 };
+        let sprite_bound = Self::SCHIP_SCR_WIDTH as u8 - sprite_width - 1;
+
+        for i in (0..if DOUBLE_HEIGHT { 32 } else { height }).step_by(step) {
+            if y_pos == Self::SCHIP_SCR_HEIGHT as u8 {
+                break;
+            }
+
+            let sprite_row = if DOUBLE_HEIGHT {
+                let hi = self.ram[((self.i_reg + i) & 0xFFF) as usize] as u64;
+                let lo = self.ram[((self.i_reg + i + 1) & 0xFFF) as usize] as u64;
+                ((hi << 8) | lo) as u128
+            }
+            else {
+                self.ram[((self.i_reg + i) & 0xFFF) as usize] as u128
+            };
+
+            let sprite_mask = if x_pos > sprite_bound { sprite_row >> (x_pos - sprite_bound) }
+            else { sprite_row << (Self::SCHIP_SCR_WIDTH as u8 - 1 - x_pos - sprite_width) };
+
+            self.regs[0xF] |= ((self.schip_screen_buf[y_pos as usize] & sprite_mask) != 0) as u8;
+            self.schip_screen_buf[y_pos as usize] ^= sprite_mask;
+            y_pos += 1;
         }
     }
 }

@@ -20,7 +20,7 @@ pub struct App {
 }
 
 impl App {
-    const APP_NAME: &'static str = "ChipRust8";
+    pub const APP_NAME: &'static str = "ChipRust8";
     const WINDOW_SCALE: usize = 12;
     const FILE_MENU_LOAD_ID: usize = 1;
     const FILE_MENU_RELOAD_ID: usize = 2;
@@ -97,8 +97,8 @@ impl App {
 
     fn check_seconds_timer(&mut self) {
         if self.seconds_timer.elapsed() >= Duration::from_secs(1) && self.rom_loaded && !self.chip_paused {
-            let avg_frame_time = (self.execute_times / self.execute_count as f64) * 1000.0;
-            println!("Average execute time: {:.3} ms", avg_frame_time);
+            let avg_exec_time = (self.execute_times / self.execute_count as f64) * 1000.0;
+            println!("Average execute time: {:.3} ms", avg_exec_time);
 
             self.execute_times = 0.0;
             self.execute_count = 0;
