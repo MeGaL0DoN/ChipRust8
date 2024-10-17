@@ -4,7 +4,7 @@ ChipRust8 is a Chip8 and SuperChip emulator made in Rust using minfb.
 
 ## Usage:
 
-Use File->load to load game ROM. File->Reload to restart current ROM.
+Press ESC or File->Load to load game ROM. File->Reload to restart current ROM.
 
 Keyboard layout is:
 | 1 | 2 | 3 | 4 |
